@@ -18,8 +18,10 @@ from .logging_setup import LOGGER_NAME
 
 logger = logging.getLogger(f"{LOGGER_NAME}.store")
 
-# Extra secret mixed into the encryption so other apps running as the same
-# user can't decrypt the blob by calling CryptUnprotectData without it.
+# DPAPI "optional entropy". This value is public (it's in the source), so it's a
+# domain separator, not a secret: it stops this blob from being decrypted by a
+# generic CryptUnprotectData call. The real protection is the Windows user
+# account the blob is bound to. Changing it invalidates saved sign-ins.
 _ENTROPY = b"MCNameClaimer/credentials/v1"
 _CRYPTPROTECT_UI_FORBIDDEN = 0x01
 DPAPI_AVAILABLE = sys.platform == "win32"

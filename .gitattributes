@@ -1,0 +1,5 @@
+# Normalise line endings in the repository.
+* text=auto
+
+# Windows batch files must keep CRLF or cmd.exe can mis-handle labels and goto.
+*.bat text eol=crlf

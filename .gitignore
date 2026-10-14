@@ -1,0 +1,51 @@
+# ---- Python build artifacts ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# ---- Virtual environments (created by setup.bat) ----
+.venv/
+venv/
+env/
+
+# ---- Test and tool caches ----
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ---- App runtime data ----
+# The app keeps these in %LOCALAPPDATA%\MCNameClaimer, never in the project folder.
+# They're listed here in case MCCLAIMER_HOME ever points inside the repo.
+settings.json
+credentials.bin
+credentials.tmp
+app-home/
+logs/
+*.log
+*.log.*
+
+# ---- Secrets, tokens and auth caches: never commit ----
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+*.bin
+*token*.json
+*token_cache*
+msal*cache*
+*secret*
+*credential*.json
+
+# ---- Editors and OS ----
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store
