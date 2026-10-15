@@ -7,8 +7,11 @@ Safety rules enforced here:
   the server's Retry-After.
 - An unclear claim result (timeout, 5xx) is resolved by reading the profile,
   never by sending the name change again.
-- A local sliding-window budget keeps availability checks below Mojang's
-  documented per-account limit, even across Stop/Start.
+- A local sliding-window budget keeps availability checks below the
+  community-documented per-account limit (Mojang publishes no official
+  figure), even across Stop/Start.
+- The account's name-change cooldown is never worked around: Start is refused
+  while Minecraft Services reports `nameChangeAllowed: false`.
 """
 
 from __future__ import annotations

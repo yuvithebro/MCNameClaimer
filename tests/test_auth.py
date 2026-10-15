@@ -14,7 +14,7 @@ from mcclaimer.auth import (
     MicrosoftAuthenticator,
     MicrosoftTokens,
 )
-from mcclaimer.errors import AuthCancelled, AuthError, TransientError
+from mcclaimer.errors import AppNotApprovedError, AuthCancelled, AuthError, TransientError
 
 CLIENT_ID = "00000000-1111-2222-3333-444444444444"
 DEVICE = DeviceCode("dev-code", "ABCD-EFGH", "https://www.microsoft.com/link", 900, 5, "msg")
@@ -88,9 +88,12 @@ class TestMinecraftLogin:
 
     def test_unapproved_azure_app_explains_review_form(self):
         session = xbox_routes(FakeSession(), mc_status=403)
-        with pytest.raises(AuthError) as caught:
+        with pytest.raises(AppNotApprovedError) as caught:
             MicrosoftAuthenticator(CLIENT_ID, session).login_minecraft("ms-access")
         assert APP_REVIEW_URL in str(caught.value)
+        assert "not guaranteed" in str(caught.value)
+        # Exactly one attempt: a refusal is never retried.
+        assert len(session.calls_to("POST", "login_with_xbox")) == 1
 
     @pytest.mark.parametrize(("xerr", "fragment"), [
         (2148916233, "no Xbox profile"),
@@ -164,6 +167,26 @@ class TestAuthSession:
         session = AuthSession(MicrosoftAuthenticator(CLIENT_ID, http), self.stored(), clock=FakeClock(1000.0))
         session.invalidate()
         assert session.get_token() == "after-401"
+
+    def test_unapproved_client_id_deletes_the_saved_sign_in(self):
+        store = MemoryStore()
+        http = xbox_routes(FakeSession(), mc_status=403)
+        session = AuthSession(MicrosoftAuthenticator(CLIENT_ID, http), store, clock=FakeClock(0))
+        with pytest.raises(AppNotApprovedError):
+            session.complete_sign_in(MicrosoftTokens("ms-access", "ms-refresh"))
+        assert session.app_not_approved
+        assert not session.is_signed_in
+        assert store.data is None
+
+    def test_refusal_during_token_refresh_signs_out(self):
+        http = FakeSession().add("POST", TOKEN_URL, FakeResponse(200, {"access_token": "ms-new", "refresh_token": "r2"}))
+        xbox_routes(http, mc_status=403)
+        store = self.stored(mc_expires_at=0)
+        session = AuthSession(MicrosoftAuthenticator(CLIENT_ID, http), store, clock=FakeClock())
+        with pytest.raises(AppNotApprovedError):
+            session.get_token()
+        assert session.app_not_approved
+        assert store.data is None
 
     def test_complete_sign_in_persists(self):
         store = MemoryStore()

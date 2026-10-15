@@ -9,7 +9,8 @@ from typing import Protocol
 from .api import JAVA_ENTITLEMENTS
 from .errors import AccountNotEligibleError, ApiError
 
-# Mojang allows one Java Edition name change every 30 days.
+# The cooldown is widely reported as 30 days. Only the hint text uses this number:
+# whether a change is allowed comes from the server's `nameChangeAllowed` flag.
 NAME_CHANGE_COOLDOWN_DAYS = 30
 
 
@@ -88,6 +89,6 @@ def verify_account(api: AccountApi) -> AccountInfo:
 def ensure_can_claim(info: AccountInfo) -> None:
     if not info.name_change_allowed:
         raise AccountNotEligibleError(
-            "Mojang says this account can't change its name right now (one change every "
-            f"{NAME_CHANGE_COOLDOWN_DAYS} days){_next_change_hint(info.name_changed_at)}."
+            "Mojang says this account can't change its name right now (name-change cooldown, "
+            f"widely reported as {NAME_CHANGE_COOLDOWN_DAYS} days){_next_change_hint(info.name_changed_at)}."
         )

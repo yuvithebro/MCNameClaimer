@@ -47,5 +47,13 @@ class AuthCancelled(AuthError):
     """The user closed the sign-in dialog."""
 
 
+class AppNotApprovedError(AuthError):
+    """Minecraft Services refused the Azure client ID (HTTP 403 at login_with_xbox).
+
+    Mojang has not approved this client ID for Minecraft API access. The app treats
+    that as final: it deletes the saved sign-in and locks Live mode again.
+    """
+
+
 class AccountNotEligibleError(Exception):
     """The account can't claim a name: no Java profile, or a name change isn't allowed yet."""

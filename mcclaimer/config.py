@@ -26,6 +26,14 @@ class Settings:
     interval_seconds: int = DEFAULT_INTERVAL_SECONDS
     simulation_mode: bool = True
     simulation_scenario: str = DEFAULT_SCENARIO
+    # The client ID the user has confirmed Mojang approved for Minecraft API access.
+    # Live mode (sign-in, account checks, monitoring) stays locked until this matches
+    # `client_id`, and is locked again if Minecraft Services refuses the ID.
+    approval_confirmed_client_id: str = ""
+
+    @property
+    def live_mode_unlocked(self) -> bool:
+        return bool(self.client_id) and self.approval_confirmed_client_id == self.client_id
 
 
 def _coerce(raw: dict) -> Settings:
@@ -35,12 +43,16 @@ def _coerce(raw: dict) -> Settings:
     except (TypeError, ValueError):
         interval = defaults.interval_seconds
     scenario = raw.get("simulation_scenario", defaults.simulation_scenario)
+    client_id = str(raw.get("client_id", "") or "").strip()
+    confirmed = str(raw.get("approval_confirmed_client_id", "") or "").strip()
     return Settings(
-        client_id=str(raw.get("client_id", "") or "").strip(),
+        client_id=client_id,
         target_username=str(raw.get("target_username", "") or "").strip(),
         interval_seconds=min(max(interval, MIN_SIMULATION_INTERVAL_SECONDS), MAX_INTERVAL_SECONDS),
         simulation_mode=bool(raw.get("simulation_mode", defaults.simulation_mode)),
         simulation_scenario=scenario if scenario in SCENARIOS else DEFAULT_SCENARIO,
+        # A confirmation only ever covers the exact client ID it was given for.
+        approval_confirmed_client_id=confirmed if client_id and confirmed == client_id else "",
     )
 
 

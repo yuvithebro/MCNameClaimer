@@ -20,12 +20,12 @@ from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Any, Callable
 
-from . import __version__
+from . import APP_NAME, APP_SUBTITLE, APP_TITLE, DISCLAIMER, __version__
 from .account import verify_account
 from .api import AVAILABLE, DUPLICATE, NOT_ALLOWED, MinecraftServicesClient
 from .auth import AuthSession, DeviceCode, MicrosoftAuthenticator
 from .config import Settings, save_settings
-from .errors import AccountNotEligibleError, ApiError, AuthCancelled, AuthError
+from .errors import AccountNotEligibleError, ApiError, AppNotApprovedError, AuthCancelled, AuthError
 from .logging_setup import LOGGER_NAME, RedactingFormatter
 from .monitor import LIVE_TIMING, SIMULATION_TIMING, MonitorState, MonitorStatus, NameMonitor
 from .paths import credentials_path, settings_path
@@ -55,7 +55,14 @@ INITIAL_WRAP = "5i"
 MIN_WRAP_PIXELS = 120
 WRAP_MARGIN_PIXELS = 4
 LOG_HEIGHT_LINES = 7
+# Wide enough that the explanatory text wraps to fewer lines, leaving room for the log.
+PREFERRED_WIDTH_INCHES = 7.5
 
+LIVE_LOCKED_MESSAGE = (
+    "Live mode is locked until Mojang approves your client ID (not guaranteed). Simulation mode needs no approval."
+)
+
+COLOR_TEXT = "#24292f"
 COLOR_MUTED = "#57606a"
 COLOR_GOOD = "#1a7f37"
 COLOR_WARN = "#9a6700"
@@ -90,6 +97,18 @@ def _display_path(path: Path) -> str:
     if local_app_data and text.lower().startswith(local_app_data.lower()):
         return "%LOCALAPPDATA%" + text[len(local_app_data):]
     return text
+
+
+def _right_padding(widget: tk.Misc) -> int:
+    """The right-hand padding of a ttk container, in pixels (0 if it has none)."""
+    try:
+        values = [int(widget.winfo_fpixels(value)) for value in widget.tk.splitlist(widget.cget("padding"))]
+    except (tk.TclError, ValueError):
+        return 0
+    if not values:
+        return 0
+    # ttk padding is "all", "x y", "left top right" or "left top right bottom".
+    return values[2] if len(values) >= 3 else values[0]
 
 
 def _format_duration(seconds: int) -> str:
@@ -218,11 +237,13 @@ class ClaimerApp:
             "device_code": self._on_device_code,
             "signin_done": self._on_signin_done,
             "signin_failed": self._on_signin_failed,
+            "app_not_approved": self._on_app_not_approved,
             "account": self._on_account_text,
         }
 
         self._create_variables(settings)
         self._build_ui()
+        self.client_id_var.trace_add("write", lambda *_args: self._on_client_id_change())
 
         app_logger = logging.getLogger(LOGGER_NAME)
         if app_logger.level == logging.NOTSET:
@@ -243,6 +264,8 @@ class ClaimerApp:
         self.scenario_var = tk.StringVar(value=SCENARIOS[settings.simulation_scenario].title)
         self.scenario_description_var = tk.StringVar()
         self.client_id_var = tk.StringVar(value=settings.client_id)
+        self._approved_client_id = settings.approval_confirmed_client_id if settings.live_mode_unlocked else ""
+        self.approval_var = tk.BooleanVar(value=settings.live_mode_unlocked)
         self.account_var = tk.StringVar()
         self.username_var = tk.StringVar(value=settings.target_username)
         self.username_hint_var = tk.StringVar()
@@ -263,6 +286,8 @@ class ClaimerApp:
             style.theme_use("vista")
         style.configure(".", font=("Segoe UI", 10))
         style.configure("Title.TLabel", font=("Segoe UI Semibold", 16))
+        style.configure("Subtitle.TLabel", font=("Segoe UI", 11), foreground=COLOR_MUTED)
+        style.configure("Disclaimer.TLabel", font=("Segoe UI Semibold", 9), foreground=COLOR_TEXT)
         style.configure("Muted.TLabel", foreground=COLOR_MUTED)
         style.configure("Key.TLabel", foreground=COLOR_MUTED)
         style.configure("Value.TLabel", font=("Segoe UI Semibold", 10))
@@ -275,16 +300,17 @@ class ClaimerApp:
     def _wrapping_label(parent: tk.Misc, **options: Any) -> ttk.Label:
         """A label that re-wraps its text to the width its container actually has."""
         label = ttk.Label(parent, wraplength=INITIAL_WRAP, justify="left", **options)
+        right_padding = _right_padding(parent)
 
         def rewrap(event: tk.Event) -> None:
-            available = event.width - label.winfo_x() - WRAP_MARGIN_PIXELS
+            available = event.width - label.winfo_x() - right_padding - WRAP_MARGIN_PIXELS
             label.configure(wraplength=max(MIN_WRAP_PIXELS, available))
 
         parent.bind("<Configure>", rewrap, add="+")
         return label
 
     def _build_ui(self) -> None:
-        self.root.title(f"Minecraft Name Claimer {__version__}")
+        self.root.title(APP_TITLE)
         self._configure_styles()
         outer = ttk.Frame(self.root, padding=(16, 12))
         outer.grid(row=0, column=0, sticky="nsew")
@@ -292,31 +318,52 @@ class ClaimerApp:
         self.root.rowconfigure(0, weight=1)
         outer.columnconfigure(0, weight=1)
 
-        ttk.Label(outer, text="Minecraft Name Claimer", style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        self._wrapping_label(
-            outer,
-            text="Watches one Java Edition username and claims it for your account as soon as Mojang reports it AVAILABLE.",
-            style="Muted.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(0, 10))
-
+        header_rows = self._build_header(outer)
         sections = (
             self._build_mode_section(outer),
             self._build_account_section(outer),
             self._build_target_section(outer),
             self._build_status_section(outer),
         )
-        for row, section in enumerate(sections, start=2):
+        for row, section in enumerate(sections, start=header_rows):
             section.grid(row=row, column=0, sticky="ew", pady=(0, 8))
-        log_row = len(sections) + 2
+        log_row = len(sections) + header_rows
         self._build_log_section(outer).grid(row=log_row, column=0, sticky="nsew")
         outer.rowconfigure(log_row, weight=1)
         self._fit_to_screen()
 
+    def _build_header(self, parent: ttk.Frame) -> int:
+        """Name, unofficial-product disclaimer and a plain description. Returns the rows used."""
+        title_row = ttk.Frame(parent)
+        title_row.grid(row=0, column=0, sticky="w")
+        ttk.Label(title_row, text=APP_NAME, style="Title.TLabel").grid(row=0, column=0, sticky="sw")
+        ttk.Label(title_row, text=f"{APP_SUBTITLE}  ·  v{__version__}", style="Subtitle.TLabel").grid(
+            row=0, column=1, sticky="sw", padx=(10, 0), pady=(0, 3)
+        )
+        disclaimer_box = ttk.Frame(parent, padding=(10, 5), relief="solid", borderwidth=1)
+        disclaimer_box.columnconfigure(0, weight=1)
+        disclaimer_box.grid(row=1, column=0, sticky="ew", pady=(6, 6))
+        # One sentence per line reads better than an arbitrary wrap.
+        self.disclaimer_label = self._wrapping_label(
+            disclaimer_box, text=DISCLAIMER.replace(". ", ".\n", 1), style="Disclaimer.TLabel"
+        )
+        self.disclaimer_label.grid(row=0, column=0, sticky="w")
+        self._wrapping_label(
+            parent,
+            text=(
+                "Watches one Java Edition username and automatically requests the name for your account "
+                "when it is AVAILABLE."
+            ),
+            style="Muted.TLabel",
+        ).grid(row=2, column=0, sticky="w", pady=(0, 8))
+        return 3
+
     def _fit_to_screen(self) -> None:
-        """Open at the natural size, but never taller than the screen; the log shrinks first."""
+        """Open at a comfortable size, but never taller than the screen; the log shrinks first."""
         self.root.update_idletasks()
         inch = int(self.root.winfo_fpixels("1i"))
-        width = self.root.winfo_reqwidth()
+        preferred = min(int(PREFERRED_WIDTH_INCHES * inch), self.root.winfo_screenwidth() - inch)
+        width = max(self.root.winfo_reqwidth(), preferred)
         height = min(self.root.winfo_reqheight(), self.root.winfo_screenheight() - inch)
         self.root.geometry(f"{width}x{height}")
         self.root.minsize(min(width, int(6.5 * inch)), min(height, int(5 * inch)))
@@ -359,8 +406,15 @@ class ClaimerApp:
         self.signin_button.grid(row=0, column=2, padx=(8, 0))
         self.signout_button = ttk.Button(frame, text="Sign out", command=self.sign_out)
         self.signout_button.grid(row=0, column=3, padx=(8, 0))
+        self.approval_check = ttk.Checkbutton(
+            frame,
+            text="Mojang has approved this client ID for Minecraft API access (required for Live mode)",
+            variable=self.approval_var,
+            command=self._on_approval_toggle,
+        )
+        self.approval_check.grid(row=1, column=0, columnspan=4, sticky="w", pady=(8, 0))
         self.account_label = self._wrapping_label(frame, textvariable=self.account_var)
-        self.account_label.grid(row=1, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        self.account_label.grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
         return frame
 
     def _build_target_section(self, parent: ttk.Frame) -> ttk.LabelFrame:
@@ -443,6 +497,16 @@ class ClaimerApp:
     def is_live(self) -> bool:
         return self.mode_var.get() == "live"
 
+    def _live_unlocked(self) -> bool:
+        """True only after the user confirmed Mojang approved exactly the client ID entered."""
+        client_id = self.client_id_var.get().strip()
+        return bool(self.approval_var.get() and client_id and client_id == self._approved_client_id)
+
+    def _has_saved_sign_in(self) -> bool:
+        if self._session is not None and self._session.is_signed_in:
+            return True
+        return self._store.persists_to_disk and self._store.path.exists()
+
     def _scenario_key(self) -> str:
         title = self.scenario_var.get()
         return next((key for key, scenario in SCENARIOS.items() if scenario.title == title), next(iter(SCENARIOS)))
@@ -469,9 +533,10 @@ class ClaimerApp:
             enable(radio, not busy)
         self.scenario_combo.configure(state="readonly" if not live and not busy else "disabled")
         enable(self.client_entry, live and not busy)
-        enable(self.signin_button, live and not busy)
-        signed_in = self._session is not None and self._session.is_signed_in
-        enable(self.signout_button, live and not busy and signed_in)
+        enable(self.approval_check, live and not busy)
+        enable(self.signin_button, live and not busy and self._live_unlocked())
+        # Sign out stays available while locked, so a saved sign-in can always be deleted.
+        enable(self.signout_button, live and not busy and self._has_saved_sign_in())
         enable(self.username_entry, not self._running)
         enable(self.interval_spin, not self._running)
         enable(self.start_button, not busy)
@@ -482,12 +547,14 @@ class ClaimerApp:
             interval = int(self.interval_var.get().strip())
         except ValueError:
             interval = DEFAULT_INTERVAL_SECONDS
+        client_id = self.client_id_var.get().strip()
         return Settings(
-            client_id=self.client_id_var.get().strip(),
+            client_id=client_id,
             target_username=self.username_var.get().strip(),
             interval_seconds=interval,
             simulation_mode=not self.is_live,
             simulation_scenario=self._scenario_key(),
+            approval_confirmed_client_id=client_id if self._live_unlocked() else "",
         )
 
     def _save_settings(self) -> None:
@@ -509,9 +576,8 @@ class ClaimerApp:
     def _on_mode_change(self) -> None:
         if self.is_live:
             self.interval_hint_var.set(
-                f"Live minimum: {MIN_LIVE_INTERVAL_SECONDS}s. Mojang allows {AVAILABILITY_LIMIT_REQUESTS} "
-                f"availability checks per 5 minutes per account; the app also caps itself at "
-                f"{AVAILABILITY_BUDGET_REQUESTS} per 5 minutes and backs off on HTTP 429."
+                f"Live minimum {MIN_LIVE_INTERVAL_SECONDS}s; at most {AVAILABILITY_BUDGET_REQUESTS} checks per "
+                f"5 min (community docs, not Mojang, report {AVAILABILITY_LIMIT_REQUESTS}). Backs off on 429."
             )
             self._refresh_live_account()
         else:
@@ -535,12 +601,46 @@ class ClaimerApp:
         problem = validate_username(name) if name else None
         self._show_form_error(problem or "")
 
+    def _on_client_id_change(self) -> None:
+        # An approval confirmation covers one exact client ID; editing the ID withdraws it.
+        if self.approval_var.get() and self.client_id_var.get().strip() != self._approved_client_id:
+            self.approval_var.set(False)
+            self._approved_client_id = ""
+        if self.is_live and not self._running and not self._signing_in:
+            self._refresh_live_account()
+        self._sync_controls()
+
+    def _on_approval_toggle(self) -> None:
+        client_id = self.client_id_var.get().strip()
+        if self.approval_var.get() and not client_id:
+            self.approval_var.set(False)
+            self._set_account_text("Enter your Azure application (client) ID first.", COLOR_BAD)
+            self._sync_controls()
+            return
+        self._approved_client_id = client_id if self.approval_var.get() else ""
+        if self.approval_var.get():
+            logger.info("Live mode unlocked: you confirmed Mojang approved this client ID.")
+        self._save_settings()
+        self._refresh_live_account()
+        self._sync_controls()
+
+    def _lock_live_mode(self) -> None:
+        self.approval_var.set(False)
+        self._approved_client_id = ""
+        self._live_account_text = None
+        self._account_checked_for = None
+        self._save_settings()
+
     def _refresh_live_account(self) -> None:
         client_id = self.client_id_var.get().strip()
         if not client_id:
             self._set_account_text(
-                "Enter your Azure app's client ID, then click Sign in. Setup steps: README.md, 'Live mode setup'."
+                "Enter your Azure app's client ID. Setup steps: README.md, 'Live mode setup'."
             )
+            return
+        if not self._live_unlocked():
+            # Locked: no sign-in, no saved-credential use and no requests of any kind.
+            self._set_account_text(LIVE_LOCKED_MESSAGE, COLOR_WARN)
             return
         session = self._session_for(client_id)
         if not session.is_signed_in:
@@ -570,7 +670,13 @@ class ClaimerApp:
 
         if self.is_live:
             client_id = self.client_id_var.get().strip()
-            if not client_id or self._session is None or self._session.client_id != client_id \
+            if not self._live_unlocked():
+                self._show_form_error(
+                    "Live mode is locked until Mojang approves your client ID (see the Microsoft account "
+                    "section). Simulation mode works without approval."
+                )
+                return
+            if self._session is None or self._session.client_id != client_id \
                     or not self._session.is_signed_in:
                 self._show_form_error("Sign in with Microsoft first (Microsoft account section above).")
                 return
@@ -607,8 +713,9 @@ class ClaimerApp:
             return 0, "The interval must be a whole number of seconds."
         if self.is_live and interval < MIN_LIVE_INTERVAL_SECONDS:
             return 0, (
-                f"Live mode checks at most every {MIN_LIVE_INTERVAL_SECONDS} seconds. Mojang allows "
-                f"{AVAILABILITY_LIMIT_REQUESTS} availability checks per 5 minutes per account."
+                f"Live mode checks at most every {MIN_LIVE_INTERVAL_SECONDS} seconds, a conservative pace "
+                f"based on the community-documented limit of {AVAILABILITY_LIMIT_REQUESTS} availability "
+                "checks per 5 minutes per account."
             )
         if interval < MIN_SIMULATION_INTERVAL_SECONDS:
             return 0, f"The interval must be at least {MIN_SIMULATION_INTERVAL_SECONDS} second."
@@ -631,6 +738,9 @@ class ClaimerApp:
                 "Enter your Azure application (client) ID first. See README.md, 'Live mode setup'.", COLOR_BAD
             )
             return
+        if not self._live_unlocked():
+            self._set_account_text(LIVE_LOCKED_MESSAGE, COLOR_BAD)
+            return
         session = self._session_for(client_id)
         api = self._api_for_current_session()
         self._save_settings()
@@ -647,6 +757,8 @@ class ClaimerApp:
     def sign_out(self) -> None:
         if self._session is not None:
             self._session.sign_out()
+        else:
+            self._store.clear()  # Live mode is locked, but a saved sign-in can still be deleted
         self._live_account_text = None
         self._account_checked_for = None
         self._set_account_text("Signed out. Saved credentials were deleted from this PC.")
@@ -696,6 +808,10 @@ class ClaimerApp:
         except AuthCancelled:
             self._events.put(("signin_failed", ("Sign-in cancelled.", "")))
             return
+        except AppNotApprovedError as exc:
+            logger.warning("Sign-in refused: %s", exc)
+            self._events.put(("app_not_approved", str(exc)))
+            return
         except (AuthError, ApiError) as exc:
             logger.warning("Sign-in failed: %s", exc)
             self._events.put(("signin_failed", (str(exc), COLOR_BAD)))
@@ -715,6 +831,10 @@ class ClaimerApp:
             logger.info(text)
         except AccountNotEligibleError as exc:
             text, color = str(exc), COLOR_BAD
+        except AppNotApprovedError as exc:
+            logger.warning("Account check refused: %s", exc)
+            self._events.put(("app_not_approved", str(exc)))
+            return
         except (AuthError, ApiError) as exc:
             text, color = f"Signed in, but the account check failed: {exc}", COLOR_WARN
         except Exception:
@@ -780,7 +900,15 @@ class ClaimerApp:
         self._stop_event = None
         self._next_check = None
         self._render_next_check()
-        if self.is_live and self._session is not None and not self._session.is_signed_in:
+        if self.is_live and self._session is not None and self._session.app_not_approved:
+            # Minecraft Services refused the client ID; the session already deleted the sign-in.
+            self._lock_live_mode()
+            self._set_account_text(
+                "Minecraft Services refused this client ID (HTTP 403), so Live mode is locked again. "
+                "Details are in the activity log.",
+                COLOR_BAD,
+            )
+        elif self.is_live and self._session is not None and not self._session.is_signed_in:
             # The session signs itself out when Microsoft rejects the saved refresh token.
             self._live_account_text = None
             self._account_checked_for = None
@@ -809,6 +937,13 @@ class ClaimerApp:
         self._close_dialog()
         self._signing_in = False
         self._set_account_text(message, color)
+        self._sync_controls()
+
+    def _on_app_not_approved(self, message: str) -> None:
+        self._close_dialog()
+        self._signing_in = False
+        self._lock_live_mode()
+        self._set_account_text(message, COLOR_BAD)
         self._sync_controls()
 
     def _on_account_text(self, payload: tuple[str, str]) -> None:

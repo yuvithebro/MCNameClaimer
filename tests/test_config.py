@@ -13,9 +13,29 @@ def test_defaults_start_in_simulation(tmp_path):
 def test_round_trip(tmp_path):
     path = tmp_path / "settings.json"
     original = Settings(client_id="cid", target_username="Notch", interval_seconds=45,
-                        simulation_mode=False, simulation_scenario="rate_limited")
+                        simulation_mode=False, simulation_scenario="rate_limited",
+                        approval_confirmed_client_id="cid")
     save_settings(original, path)
     assert load_settings(path) == original
+    assert load_settings(path).live_mode_unlocked
+
+
+def test_live_mode_starts_locked():
+    assert not Settings().live_mode_unlocked
+    assert not Settings(client_id="cid").live_mode_unlocked
+
+
+def test_approval_for_a_different_client_id_is_dropped(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"client_id": "new-id", "approval_confirmed_client_id": "old-id"}))
+    settings = load_settings(path)
+    assert settings.approval_confirmed_client_id == ""
+    assert not settings.live_mode_unlocked
+
+
+def test_client_id_from_environment_is_not_pre_approved(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCCLAIMER_CLIENT_ID", "env-client")
+    assert not load_settings(tmp_path / "missing.json").live_mode_unlocked
 
 
 def test_bad_values_fall_back_to_safe_defaults(tmp_path):

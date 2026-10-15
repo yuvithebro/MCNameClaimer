@@ -1,8 +1,10 @@
 """Rate-limit helpers: Retry-After parsing, exponential backoff and a local request budget.
 
 The numbers come from the community-maintained Mojang API documentation
-(https://minecraft.wiki/w/Mojang_API). Mojang does not publish an official
-contract for these endpoints, so the app stays well below the stated limits.
+(https://minecraft.wiki/w/Mojang_API), not from an official Mojang source.
+Mojang does not publish a third-party contract for these endpoints, so the real
+limits may differ; the app stays well below the community figures and always
+obeys HTTP 429 and Retry-After from the server.
 """
 
 from __future__ import annotations
@@ -15,15 +17,15 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Callable
 
-# Documented: the name availability endpoint "has a per-account ratelimit of
-# 20 requests per 5 minutes".
+# Community documentation (not official): the name availability endpoint "has a
+# per-account ratelimit of 20 requests per 5 minutes".
 AVAILABILITY_LIMIT_REQUESTS = 20
 AVAILABILITY_LIMIT_WINDOW_SECONDS = 300
 
 # Our own hard budget is 80% of that, so restarts or clock jitter can't tip us over.
 AVAILABILITY_BUDGET_REQUESTS = 16
 
-# 20 s between checks = 15 checks per 5 minutes = 75% of the documented limit.
+# 20 s between checks = 15 checks per 5 minutes = 75% of the community-documented limit.
 MIN_LIVE_INTERVAL_SECONDS = 20
 DEFAULT_INTERVAL_SECONDS = 30
 MIN_SIMULATION_INTERVAL_SECONDS = 1
@@ -89,7 +91,7 @@ class SlidingWindowLimiter:
     """Allows at most `max_requests` within any rolling `window_seconds`.
 
     Kept for the lifetime of the app (not per monitoring run), so pressing
-    Stop/Start repeatedly can never burst past the documented limit.
+    Stop/Start repeatedly can never burst past the community-documented limit.
     """
 
     def __init__(

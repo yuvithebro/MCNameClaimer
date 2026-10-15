@@ -4,7 +4,7 @@ import pytest
 
 from fakes import AVAILABLE, DUPLICATE, FakeClock, InstantEvent, ScriptedApi, http_error
 
-from mcclaimer.errors import AuthError
+from mcclaimer.errors import AppNotApprovedError, AuthError
 from mcclaimer.monitor import MonitorState, MonitorTiming, NameMonitor
 from mcclaimer.ratelimit import SlidingWindowLimiter
 
@@ -198,6 +198,23 @@ class TestRun:
         assert status.state is MonitorState.FAILED
         assert "no Minecraft: Java Edition profile" in status.message
         assert api.availability_calls == 0
+
+    def test_refused_client_id_stops_before_any_check(self):
+        api = ScriptedApi([AVAILABLE], profiles=[AppNotApprovedError("Minecraft Services refused this Azure app (HTTP 403)")])
+        monitor, _, _ = make_monitor(api)
+        status = monitor.run(InstantEvent())
+        assert status.state is MonitorState.FAILED
+        assert "HTTP 403" in status.message
+        assert api.availability_calls == 0
+        assert api.change_calls == []
+
+    def test_refused_client_id_mid_run_stops_without_claiming(self):
+        api = ScriptedApi([DUPLICATE, AppNotApprovedError("refused (HTTP 403)"), AVAILABLE])
+        monitor, _, clock = make_monitor(api)
+        run_steps(monitor, clock)
+        assert monitor.status.state is MonitorState.FAILED
+        assert api.availability_calls == 2
+        assert api.change_calls == []
 
     def test_already_owned_name_needs_nothing(self):
         api = ScriptedApi([AVAILABLE], profile_name="target")

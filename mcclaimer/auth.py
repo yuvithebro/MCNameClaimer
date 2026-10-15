@@ -15,7 +15,9 @@ about to expire, steps 2-4 run again from a refreshed Microsoft token.
 
 Prerequisite (cannot be bypassed): Mojang must approve your Azure app's
 client ID for Minecraft API access (https://aka.ms/mce-reviewappid).
-Unapproved apps get HTTP 403 at step 4.
+Unapproved apps get HTTP 403 at step 4. The app treats that 403 as final: it
+raises AppNotApprovedError, deletes the saved sign-in, and the GUI locks Live
+mode again. It never retries with, or falls back to, any other client ID.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from typing import Any, Callable
 import requests
 
 from .api import REQUEST_TIMEOUT_SECONDS, USER_AGENT, error_body
-from .errors import AuthCancelled, AuthError, RateLimitedError, TransientError
+from .errors import AppNotApprovedError, AuthCancelled, AuthError, RateLimitedError, TransientError
 from .logging_setup import LOGGER_NAME
 from .ratelimit import parse_retry_after
 from .secure_store import SecureStore
@@ -52,9 +54,10 @@ SLOW_DOWN_EXTRA_SECONDS = 5
 CREDENTIALS_FORMAT_VERSION = 1
 
 APP_NOT_APPROVED_MESSAGE = (
-    "Minecraft Services refused this Azure app (HTTP 403). Newly registered Azure apps must be "
-    f"approved by Mojang before they can use the Minecraft API. Apply at {APP_REVIEW_URL} with "
-    "your client ID, then sign in again once approved. Simulation mode works without approval."
+    "Minecraft Services refused this Azure app (HTTP 403): Mojang has not approved this client ID "
+    "for Minecraft API access. The saved sign-in was deleted and Live mode is locked again. "
+    f"Approval is requested through Mojang's AppID review ({APP_REVIEW_URL}) and is not "
+    "guaranteed. Simulation mode works without approval."
 )
 
 XSTS_ERRORS = {
@@ -296,7 +299,7 @@ class MicrosoftAuthenticator:
         )
         status = response.status_code
         if status == 403:
-            raise AuthError(f"{APP_NOT_APPROVED_MESSAGE}\nServer said: {error_body(response) or '(empty)'}")
+            raise AppNotApprovedError(f"{APP_NOT_APPROVED_MESSAGE}\nServer said: {error_body(response) or '(empty)'}")
         if status == 429:
             raise RateLimitedError(
                 "Minecraft sign-in: rate limited (HTTP 429)",
@@ -330,6 +333,8 @@ class AuthSession:
         self._refresh_token: str | None = None
         self._access_token: str | None = None
         self._expires_at = 0.0
+        # Set once Minecraft Services refuses this client ID; the GUI then locks Live mode.
+        self.app_not_approved = False
         self._load()
 
     @property
@@ -370,8 +375,19 @@ class AuthSession:
             self._refresh_token = tokens.refresh_token
             self._access_token = None
             self._persist()
-            self._set_minecraft_token(self.authenticator.login_minecraft(tokens.access_token))
+            self._login_minecraft(tokens.access_token)
         logger.info("Signed in with Microsoft; Minecraft access token obtained.")
+
+    def _login_minecraft(self, microsoft_access_token: str) -> None:
+        try:
+            token = self.authenticator.login_minecraft(microsoft_access_token)
+        except AppNotApprovedError:
+            # A Microsoft sign-in this client ID can't use is not worth keeping.
+            self.app_not_approved = True
+            self.sign_out()
+            raise
+        self.app_not_approved = False
+        self._set_minecraft_token(token)
 
     def _set_minecraft_token(self, token: MinecraftToken) -> None:
         self._access_token = token.access_token
@@ -395,7 +411,7 @@ class AuthSession:
             self._refresh_token = tokens.refresh_token
             self._access_token = None
             self._persist()
-            self._set_minecraft_token(self.authenticator.login_minecraft(tokens.access_token))
+            self._login_minecraft(tokens.access_token)
             return self._access_token
 
     def invalidate(self) -> None:

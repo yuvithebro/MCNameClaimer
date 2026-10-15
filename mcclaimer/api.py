@@ -135,7 +135,7 @@ class MinecraftServicesClient:
         context = "Entitlement lookup"
         response = self._request("GET", f"/entitlements/license?requestId={uuid.uuid4()}", context)
         if not response.content:
-            return []  # documented: empty payload when not owned or when playing via Game Pass
+            return []  # community docs: empty payload when not owned or when playing via Game Pass
         data = parse_json(response, context)
         items = data.get("items", []) if isinstance(data, dict) else []
         return [item["name"] for item in items if isinstance(item, dict) and "name" in item]

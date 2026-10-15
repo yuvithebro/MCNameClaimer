@@ -7,7 +7,7 @@ import sys
 import tkinter as tk
 from tkinter import messagebox
 
-from . import __version__
+from . import APP_NAME, __version__
 from .config import load_settings
 from .gui import ClaimerApp
 from .logging_setup import LOGGER_NAME, configure_logging
@@ -29,7 +29,7 @@ def _enable_high_dpi() -> None:
 
 def main() -> None:
     log_file = configure_logging()
-    logger.info("Minecraft Name Claimer %s starting.", __version__)
+    logger.info("%s %s starting (unofficial third-party utility).", APP_NAME, __version__)
     _enable_high_dpi()
     root = tk.Tk()
 

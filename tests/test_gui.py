@@ -6,12 +6,14 @@ import pytest
 
 tk = pytest.importorskip("tkinter")
 
+from mcclaimer import APP_TITLE, DISCLAIMER  # noqa: E402
 from mcclaimer.config import Settings, load_settings  # noqa: E402
-from mcclaimer.gui import ClaimerApp  # noqa: E402
+from mcclaimer.gui import LIVE_LOCKED_MESSAGE, ClaimerApp  # noqa: E402
 from mcclaimer.monitor import MonitorState  # noqa: E402
 from mcclaimer.secure_store import SecureStore  # noqa: E402
 
 TIMEOUT_SECONDS = 30
+CLIENT_ID = "00000000-1111-2222-3333-444444444444"  # placeholder, not a real app
 
 
 @pytest.fixture(scope="session")
@@ -83,9 +85,19 @@ def test_invalid_username_does_not_start(app):
     assert "Only letters" in app.form_error_var.get()
 
 
-def test_live_mode_enforces_minimum_interval_and_sign_in(app):
+def confirm_approval(app, client_id=CLIENT_ID):
+    app.client_id_var.set(client_id)
+    app.approval_var.set(True)
+    app._on_approval_toggle()
+
+
+def switch_to_live(app):
     app.mode_var.set("live")
     app._on_mode_change()
+
+
+def test_live_mode_enforces_minimum_interval_lock_and_sign_in(app):
+    switch_to_live(app)
     app.username_var.set("Notch")
     app.interval_var.set("5")
     app.start()
@@ -94,7 +106,55 @@ def test_live_mode_enforces_minimum_interval_and_sign_in(app):
     app.interval_var.set("30")
     app.start()
     assert not app._running
+    assert "locked" in app.form_error_var.get()
+    confirm_approval(app)
+    app.start()
+    assert not app._running
     assert "Sign in" in app.form_error_var.get()
+
+
+def test_live_mode_is_locked_until_approval_is_confirmed(app):
+    switch_to_live(app)
+    app.client_id_var.set(CLIENT_ID)
+    assert str(app.signin_button["state"]) == "disabled"
+    assert app.account_var.get() == LIVE_LOCKED_MESSAGE
+    app.sign_in()
+    assert not app._signing_in and app._dialog is None and app._session is None
+    confirm_approval(app)
+    assert str(app.signin_button["state"]) == "normal"
+
+
+def test_editing_the_client_id_withdraws_the_approval(app):
+    switch_to_live(app)
+    confirm_approval(app)
+    app.client_id_var.set(CLIENT_ID + "0")
+    assert app.approval_var.get() is False
+    assert str(app.signin_button["state"]) == "disabled"
+
+
+def test_refused_client_id_locks_live_mode_again(app, tmp_path):
+    switch_to_live(app)
+    confirm_approval(app)
+    app._on_app_not_approved("Minecraft Services refused this Azure app (HTTP 403)")
+    assert app.approval_var.get() is False
+    assert str(app.signin_button["state"]) == "disabled"
+    assert "HTTP 403" in app.account_var.get()
+    assert not load_settings(tmp_path / "settings.json").live_mode_unlocked
+
+
+def test_approval_is_saved_for_that_client_id(app, tmp_path):
+    switch_to_live(app)
+    confirm_approval(app)
+    app.close()
+    saved = load_settings(tmp_path / "settings.json")
+    assert saved.client_id == CLIENT_ID
+    assert saved.live_mode_unlocked
+
+
+def test_window_shows_unofficial_title_and_disclaimer(app):
+    assert app.root.title() == APP_TITLE
+    assert not APP_TITLE.startswith("Minecraft")
+    assert " ".join(app.disclaimer_label.cget("text").split()) == DISCLAIMER
 
 
 def test_close_saves_settings(app, tmp_path):
